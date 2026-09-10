@@ -1,0 +1,8 @@
+mysql-connector-python
+python-dotenv
+langchain
+langchain-groq
+langgraph
+sentence-transformers
+faiss-cpu
+graphviz
