@@ -11,10 +11,34 @@ Functions:
     get_foreign_keys(): Queries INFORMATION_SCHEMA to return all foreign key relationships.
     get_primary_keys(): Queries INFORMATION_SCHEMA to return primary key columns for each table.
     get_complete_metadata(): Combines tables, columns, primary keys, and foreign keys into a single metadata dictionary.
+    get_table_descriptions(): Returns domain descriptions for Sakila database tables.
 """
 
 
 import mysql.connector
+
+
+# Domain descriptions to enrich semantic table embeddings
+TABLE_DESCRIPTIONS = {
+    "actor": "Actors, film performers, movie stars, first and last name of actors.",
+    "address": "Physical addresses, street location, district, postal code, city linkage, customer location.",
+    "category": "Film categories, genres, action, comedy, drama, sci-fi, horror, classification.",
+    "city": "Cities, urban locations, city names, linked to country.",
+    "country": "Countries, nations, global locations, India, Canada, USA, geographic region.",
+    "customer": "Customers, clients, users, buyers, active members who rent films.",
+    "film": "Films, movies, motion pictures, title, description, release year, duration, rating.",
+    "film_actor": "Cast mapping linking actors to the films they starred in.",
+    "film_category": "Genre mapping linking films to their categories.",
+    "film_text": "Film titles and text descriptions for searching.",
+    "inventory": "Store inventory stock, physical film copies available at store locations.",
+    "language": "Spoken languages for films, audio tracks.",
+    "payment": "Payment transactions, customer invoices, revenue, rental charges.",
+    "rental": "Film rentals, transactions, checkout dates, return dates, customer rental activity.",
+    "staff": "Store staff members, employees, managers.",
+    "store": "Physical store locations, inventory managers, branch stores."
+}
+
+
 def get_connection():
     """Create and return a connection to the Sakila MySQL database."""
     return mysql.connector.connect(
@@ -117,6 +141,11 @@ def get_complete_metadata():
     }
 
 
+def get_table_descriptions():
+    """Return domain descriptions for Sakila database tables."""
+    return TABLE_DESCRIPTIONS
+
+
 if __name__ == "__main__":
     metadata = get_complete_metadata()
     print("=" * 50)
@@ -124,6 +153,18 @@ if __name__ == "__main__":
     print(f"Loaded {len(metadata['foreign_keys'])} foreign key relationships.")
     print(f"Loaded primary keys for {len(metadata['primary_keys'])} tables.")
     print("=" * 50)
+
+
+
+    print("\nComplete Schema:")
+
+    for table_name, columns in metadata["schema"].items():
+        print(f"\nTable: {table_name}")
+
+        for column in columns:
+            print(column)
+
+
 
     print("\nSample Foreign Keys:")
     for fk in metadata["foreign_keys"][:5]:

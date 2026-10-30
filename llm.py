@@ -1,16 +1,10 @@
 """
 llm.py
 
-This module handles communication with the LLM via LangChain / ChatGroq to convert natural language
-questions into executable MySQL SQL queries.
-
-It receives structured parameters:
-- question: The natural language query from the user.
-- anchor_tables: Semantically relevant tables identified via FAISS vector search.
-- foreign_key_relationships: String representation of foreign key connections.
-- final_schema: Comprehensive schema details (columns, PKs, FKs) for relevant tables.
-
-It constructs the structured prompt and invokes ChatGroq to generate syntactically valid SQL.
+Groq LLM configuration and utility functions.
+The main SQL generation logic is now handled by the LangGraph nodes in nodes.py.
+This module provides the shared LLM instance and a standalone generate_sql function
+for backward compatibility and direct usage outside the LangGraph workflow.
 """
 
 import os
@@ -31,6 +25,9 @@ def generate_sql(question, anchor_tables, foreign_key_relationships, final_schem
     """
     Generate MySQL SQL query using ChatGroq based on the user's question,
     identified anchor tables, detected foreign key relationships, and final schema context.
+
+    NOTE: In the LangGraph workflow, SQL generation is handled by nodes.generate_sql().
+    This function is retained for standalone usage or backward compatibility.
     """
     # Format anchor tables as string if passed as list
     if isinstance(anchor_tables, list):
@@ -57,24 +54,26 @@ You have been provided with:
 
 IMPORTANT RULES:
 
-1. Use ONLY the tables and columns provided in the Final Relevant Schema.
-2. Do NOT invent table names.
-3. Do NOT invent column names.
-4. Do NOT invent foreign-key relationships.
-5. Use the provided foreign-key relationships when determining JOIN conditions.
-6. The Anchor Tables are starting points, not necessarily the complete set of tables required for the query.
-7. You may use intermediate tables from the Final Relevant Schema when they are required to connect tables.
-8. Do not use tables that are not present in the Final Relevant Schema.
-9. Generate syntactically valid MySQL SQL.
-10. Return ONLY the SQL query.
-11. Do NOT return explanations.
-12. Do NOT use markdown code fences.
-13. Do NOT write ```sql.
-14. If aggregation is required, use appropriate GROUP BY, COUNT, SUM, AVG, MIN, MAX, etc.
-15. If filtering is required, use an appropriate WHERE clause.
-16. If multiple tables are required, use the provided foreign-key relationships to construct the JOINs.
-17. Do not assume relationships that are not provided.
-18. Prefer explicit JOIN syntax instead of implicit comma joins.
+1. RELEVANCE CHECK: If the user's question is conversational, personal (e.g., "what is your name", "who are you", "hello", "how are you"), or irrelevant/unrelated to querying the database, do NOT generate any SQL query. Return EXACTLY:
+Please ask a relevant question related to the data.
+2. Use ONLY the tables and columns provided in the Final Relevant Schema.
+3. Do NOT invent table names.
+4. Do NOT invent column names.
+5. Do NOT invent foreign-key relationships.
+6. Use the provided foreign-key relationships when determining JOIN conditions.
+7. The Anchor Tables are starting points, not necessarily the complete set of tables required for the query.
+8. You may use intermediate tables from the Final Relevant Schema when they are required to connect tables.
+9. Do not use tables that are not present in the Final Relevant Schema.
+10. Generate syntactically valid MySQL SQL if the question is asking to query the database.
+11. Return ONLY the SQL query, OR the exact message "Please ask a relevant question related to the data." if the question is irrelevant.
+12. Do NOT return explanations.
+13. Do NOT use markdown code fences.
+14. Do NOT write ```sql.
+15. If aggregation is required, use appropriate GROUP BY, COUNT, SUM, AVG, MIN, MAX, etc.
+16. If filtering is required, use an appropriate WHERE clause.
+17. If multiple tables are required, use the provided foreign-key relationships to construct the JOINs.
+18. Do not assume relationships that are not provided.
+19. Prefer explicit JOIN syntax instead of implicit comma joins.
 
 USER QUESTION:
 {question}
@@ -88,7 +87,7 @@ FOREIGN-KEY RELATIONSHIPS:
 FINAL RELEVANT SCHEMA:
 {final_schema}
 
-Generate the MySQL SQL query now."""
+Generate the response now."""
 
     response = llm.invoke(prompt)
     sql = response.content.strip()
@@ -102,4 +101,4 @@ Generate the MySQL SQL query now."""
             lines = lines[:-1]
         sql = "\n".join(lines).strip()
 
-    return sql
+    return sql

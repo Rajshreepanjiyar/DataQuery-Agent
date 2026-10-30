@@ -1,0 +1,221 @@
+================================================================================
+  SCHEMAQUERY / DATAQUERY-AGENT: COMPLETE INTERVIEW GUIDE & ARCHITECTURE
+================================================================================
+
+This document gives you the exact, step-by-step script and conceptual breakdown
+to explain this project in technical interviews. It covers everything from the 
+one-time offline setup to runtime query execution, technical definitions, and 
+frequently asked interview questions.
+
+--------------------------------------------------------------------------------
+PART 1: 60-SECOND INTERVIEW ELEVATOR PITCH
+(Use this when the interviewer says: "Walk me through your project")
+--------------------------------------------------------------------------------
+
+"I built an end-to-end Natural Language-to-SQL agent called SchemaQuery that allows
+non-technical users to query relational databases (like MySQL/XAMPP) using plain English.
+
+The core engineering challenge in Text-to-SQL is that real-world enterprise databases 
+have dozens or hundreds of tables. Feeding the entire schema into an LLM causes 
+hallucinations, token waste, and inaccurate multi-table joins.
+
+To solve this, I designed a two-phase architecture:
+1. One-time Setup: I connect Python to MySQL to extract complete schema metadata, 
+   enrich each table with domain descriptions, encode them using Sentence Transformers, 
+   and store them in a FAISS vector index.
+2. Runtime Pipeline: When a user asks a question, it is vectorized, and FAISS performs 
+   cosine similarity search to find 'Anchor Tables'. Then, instead of guessing joins, 
+   the system queries MySQL's foreign key relationships, constructs an in-memory graph, 
+   and runs Breadth-First Search (BFS) to automatically discover any intermediate 
+   bridge tables needed to connect them.
+
+Finally, only the minimal, relevant sub-schema and join rules are passed to an LLM 
+(via Groq) to generate standard MySQL SQL. The query passes through a strict 
+read-only (SELECT) safety guardrail before executing on the XAMPP MySQL database and 
+returning rows to the user."
+
+--------------------------------------------------------------------------------
+PART 2: COMPLETE STEP-BY-STEP WORKFLOW
+--------------------------------------------------------------------------------
+
+The architecture is divided into two phases:
+Phase A: One-Time Offline Indexing (Setup)
+Phase B: Real-Time Runtime Query Execution
+
+================================================================================
+PHASE A: ONE-TIME OFFLINE INDEXING (SETUP)
+================================================================================
+
+Step 1: Database Connection & Dynamic Metadata Extraction (schema.py)
+---------------------------------------------------------------------
+- What happens: 
+  Python connects to the MySQL database (hosted locally on XAMPP) using `mysql.connector`.
+- Action:
+  Instead of hardcoding table names, the system queries MySQL's native data dictionary:
+  * `SHOW TABLES` and `DESCRIBE <table_name>` to fetch table names, column names, and data types.
+  * `INFORMATION_SCHEMA.KEY_COLUMN_USAGE` to dynamically retrieve all Primary Keys (PKs) 
+    and Foreign Key (FK) constraints (parent table, parent column, child table, child column).
+
+Step 2: Table Documentation & Semantic Enrichment (rag.py)
+----------------------------------------------------------
+- What happens:
+  Raw database column names like `rental_id` or `amount` are often too brief for vector search.
+  For each table, the system builds an enriched text document containing:
+  * Table name
+  * Business/domain description (e.g., for `payment`: "Payment transactions, customer invoices, revenue, rental charges")
+  * All column names and data types
+- Why:
+  This ensures that if a user asks about "revenue" or "movie performers", vector search 
+  can match it to the `payment` or `actor` tables even if the word isn't in the column name.
+
+Step 3: Embedding Generation & FAISS Indexing (rag.py)
+------------------------------------------------------
+- Embedding Model:
+  We pass the enriched text documents through `SentenceTransformer('all-MiniLM-L6-v2')`, 
+  producing a 384-dimensional dense vector for each table.
+- Normalization & FAISS Index:
+  The vectors are L2-normalized (`faiss.normalize_L2`).
+  We initialize a FAISS `IndexFlatIP` (Inner Product) index. Since the vectors are normalized, 
+  inner product is mathematically equivalent to Cosine Similarity.
+- Persistence:
+  The FAISS index is saved as `schema.index` and the table metadata is serialized to `schema_documents.pkl`.
+  This setup is done once and reused for all future queries.
+
+================================================================================
+PHASE B: REAL-TIME RUNTIME QUERY EXECUTION (query.py)
+================================================================================
+
+Step 4: User Input & Question Vectorization
+-------------------------------------------
+- The user inputs a plain English question via CLI/interface (e.g., 
+  "Which customers made the highest total payments?").
+- The exact same embedding model (`all-MiniLM-L6-v2`) converts the user question 
+  into a 384-dimensional vector and applies L2 normalization.
+
+Step 5: FAISS Similarity Search & Anchor Table Selection
+--------------------------------------------------------
+- Action:
+  The question vector is searched against `schema.index` using `index.search()`.
+- Score Threshold Filtering:
+  Rather than blindly taking top-K tables, the system applies a Cosine Similarity 
+  threshold (e.g., score >= 0.15).
+- Anchor Tables:
+  Tables scoring above the threshold are identified as **Anchor Tables** (starting-point tables).
+  If no table meets the threshold, a top-1 fallback guarantees at least one anchor table.
+  For example, for the query above, `customer` and `payment` are selected as anchor tables.
+
+Step 6: Foreign-Key Graph Construction & BFS Shortest Path Discovery
+---------------------------------------------------------------------
+- The Challenge:
+  What if the user asks: "Which actors appeared in Action movies?"
+  Vector search might find `actor` and `category`, but they cannot be joined directly.
+  They require intermediate junction tables: `actor -> film_actor -> film -> film_category -> category`.
+- Graph Construction:
+  The system constructs an undirected adjacency graph using verified foreign keys from `schema.py`.
+- BFS (Breadth-First Search):
+  For all pairs of anchor tables, the system executes BFS shortest-path graph traversal.
+- Result:
+  It identifies the exact intermediate bridge tables required to link the anchor tables, 
+  forming a connected sub-schema without importing unnecessary tables from the database.
+
+Step 7: Focused Sub-Schema Context Generation
+---------------------------------------------
+- The system formats a clean, focused markdown prompt containing:
+  1. The User Question
+  2. The Anchor Tables
+  3. The exact Foreign Key join conditions (e.g., `payment.customer_id -> customer.customer_id`)
+  4. The relevant tables with their specific columns and data types.
+- Unrelated tables (e.g., `inventory`, `staff`, `store`) are completely excluded.
+
+Step 8: LLM SQL Generation with Zero-Hallucination Prompting (llm.py)
+---------------------------------------------------------------------
+- LLM Provider:
+  ChatGroq (ultra-low latency, running high-performance models at `temperature = 0` for deterministic outputs).
+- Prompt Constraints:
+  The system prompt enforces strict rules:
+  * Use ONLY the provided tables and columns.
+  * Construct JOINs strictly using the provided foreign keys.
+  * Return ONLY executable MySQL SQL with no conversational markdown or chit-chat.
+- The LLM outputs the syntactically correct SQL query with appropriate JOINs, GROUP BYs, and aggregations.
+
+Step 9: Security & Safety Guardrail Check
+-----------------------------------------
+- Before any query touches the database, the string is inspected:
+  `if not sql_query.strip().lower().startswith("select"): raise ValueError(...)`
+- This ensures only read-only queries are executed, blocking malicious `DROP`, `DELETE`, `UPDATE`, or `INSERT` statements.
+
+Step 10: MySQL Database Execution on XAMPP (database.py)
+--------------------------------------------------------
+- The validated query is dispatched to the XAMPP MySQL database (`sakila`).
+- `cursor.fetchall()` retrieves the resulting rows.
+- The data is formatted and presented to the user.
+
+--------------------------------------------------------------------------------
+PART 3: KEY TECHNICAL TERMS & FIELDS EXPLAINED
+(Know these definitions if an interviewer asks for clarification)
+--------------------------------------------------------------------------------
+
+1. Schema Metadata:
+   The structural description of the database: table names, column names, data types, 
+   primary keys, and foreign keys stored in MySQL's `INFORMATION_SCHEMA`.
+
+2. Sentence Transformers (all-MiniLM-L6-v2):
+   A lightweight, high-performance pre-trained transformer model that maps sentences 
+   and paragraphs to a 384-dimensional dense vector space for semantic similarity.
+
+3. FAISS (Facebook AI Similarity Search):
+   An open-source library optimized for efficient similarity search and clustering of dense vectors.
+
+4. IndexFlatIP & Cosine Similarity:
+   `IndexFlatIP` measures the Inner Product between vectors. When vectors are L2-normalized 
+   (length = 1.0), Inner Product is identical to Cosine Similarity, measuring the angular 
+   closeness between the user's intent and the table's purpose.
+
+5. Anchor Tables:
+   The primary tables directly mentioned or implied by the user's query, discovered via 
+   FAISS vector search.
+
+6. Foreign Key Graph:
+   An in-memory graph where tables are nodes and foreign key constraints are edges.
+
+7. BFS (Breadth-First Search) Shortest Path:
+   An unweighted graph search algorithm that finds the minimum number of joins/intermediate tables 
+   needed to connect two anchor tables together.
+
+8. Read-Only Guardrail (SELECT Safety):
+   An application-level security check preventing write operations or catastrophic data mutations.
+
+--------------------------------------------------------------------------------
+PART 4: TOP INTERVIEW QUESTIONS & ANSWERS ABOUT THIS PROJECT
+--------------------------------------------------------------------------------
+
+Q1: Why didn't you just pass the whole database schema to the LLM?
+A1: Three critical reasons:
+    1. Context Window & Cost: Large enterprise schemas exceed token limits or increase API cost.
+    2. Hallucinations & Distraction: LLMs perform poorly when choosing between dozens of similar tables. 
+       Filtering down to 2-4 tables drastically improves accuracy.
+    3. Latency: Smaller prompts mean faster processing and faster response times.
+
+Q2: Why use BFS with a Foreign-Key Graph instead of letting FAISS find all tables?
+A2: Vector similarity only captures semantic intent. If a user asks "Show actors in Action films", 
+    the words "film_actor" and "film_category" are junction/mapping tables that have low semantic 
+    similarity to the question. FAISS alone would miss them. By using BFS over the actual foreign key graph, 
+    we guarantee mathematically valid join paths between the semantically matched tables.
+
+Q3: Why did you use Groq instead of standard OpenAI API?
+A3: Groq provides custom LPUs (Language Processing Units) that deliver near-instantaneous token generation 
+    (sub-second latency), which is crucial for interactive natural language database agents.
+
+Q4: How does this prevent SQL Injection or malicious queries?
+A4: First, the LLM is constrained to generate only valid MySQL queries. Second, before reaching the database, 
+    the pipeline enforces a strict rule requiring queries to start with SELECT. For production, this can be 
+    further hardened with read-only MySQL database users and AST (Abstract Syntax Tree) query parsing.
+
+Q5: What happens if a user asks an ambiguous question?
+A5: Our FAISS search uses a similarity threshold fallback: if no table crosses the strict threshold, 
+    it falls back to the top-1 highest scoring table to attempt the best possible interpretation, 
+    or the prompt can be configured to ask for user clarification.
+
+================================================================================
+END OF INTERVIEW PREPARATION GUIDE
+================================================================================

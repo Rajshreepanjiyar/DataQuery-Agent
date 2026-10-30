@@ -5,4 +5,5 @@ langchain-groq
 langgraph
 sentence-transformers
 faiss-cpu
-graphviz
+pydantic
+pandas
